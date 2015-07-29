@@ -14,7 +14,7 @@
 #  - Neither the name of Arista Networks nor the names of its
 # contributors may be used to endorse or promote products derived from
 # this software without specific prior written permission.
-# 
+#
 # THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
 # "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
 # LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
@@ -30,12 +30,17 @@
 # Port auto-description
 #
 #    Version 2.0 8/8/2013
-#    Written by: 
+#    Written by:
 #       Mark Berly, Arista Networks
 #
+#    Version 3.0 7/28/2015
+#    Written by:
+#       Phil DiLeo, Arista Networks
+#
 #    Revision history:
-#       1.0 - initially written using native sysdb calls (deprecated) 
+#       1.0 - initially written using native sysdb calls (deprecated)
 #       2.0 - rewritten using eAPI
+#       3.0 - added show lldp neighbors detail
 
 
 """
@@ -57,18 +62,18 @@
            running locallty, use '127.0.0.1' for the IP.
 
       portAuto can then be started using any of the following methods:
-          
+
       1 - Execute directly from bash (from the switch, or a remote
           switch/server running Python):
 
          (bash)# /mnt/flash/portAuto
-         
+
       2 - Configure an alias on the switch:
 
          (config)# alias portAuto bash /mnt/flash/portAuto
-         
+
       3 - Schedule a job on the switch:
-   
+
           e.g.: In order to run portAuto every 12 hours, use:
 
          (config)# schedule portAuto interval 720 max-log-files 0
@@ -97,28 +102,179 @@
 """
 
 from jsonrpclib import Server
+import logging
+import pprint as pp
+import re
 
 #----------------------------------------------------------------
 # Configuration section
 #----------------------------------------------------------------
-SWITCH_IP = '127.0.0.1'
-USERNAME = 'test'
-PASSWORD = 'test'
+TRANSPORT = 'http'
+SWITCH_IP = '172.16.130.70'
+USERNAME = 'admin'
+PASSWORD = 'admin'
 #----------------------------------------------------------------
 
+def log(msg):
+    '''Log message to stdout and logging file
+    Args:
+        msg: string to print
+    Returns: None
+    '''
+    logging.basicConfig(filename='PortAuto.log',level=logging.DEBUG)
+    logging.debug(msg)
+    #print msg - uncomment to print logs to stdout
+
+
+def setup_eapi_connection():
+
+    url = "%s://%s:%s@%s/command-api" % (TRANSPORT, USERNAME, PASSWORD,
+                                         SWITCH_IP)
+
+    log("Setting up connection to %s" % url)
+    eapi = Server(url)
+    return eapi
+
+
+def run_cmds(eapi, commands, format="json"):
+
+    log("Running command: %s" % commands)
+    try:
+        result = eapi.runCmds(1, commands, format)
+    except jsonrpclib.ProtocolError:
+        errorResponse = jsonrpclib.loads(jsonrpclib.history.response)
+        log("Failed to run cmd:%s. %s" %
+            (commands, errorResponse["error"]["data"][0]["errors"][-1]))
+        sys.exit(1)
+
+    return result
+
+
+def get_lldp_info(eapi):
+    local_interfaces = _get_local_interfaces(eapi)
+
+    lldp_info = list()
+
+    # Build a dictionary keyed by local interfaces.
+    for intf in local_interfaces:
+        # Run lldp neighbors detail against specific interfaces to limit output
+        raw_detail = _get_lldp_detail(eapi, intf)
+        # Remove the first item in the array - useless info
+        unique_neighbors = raw_detail.split('\n\n')[1:]
+
+        # Look through all of the raw output and scrape.
+        for neigh in unique_neighbors:
+            output = _parse_raw_neighbor(neigh)
+            if output:
+                output['port'] = intf
+                lldp_info.append(output)
+
+    return lldp_info
+
+
+def _get_local_interfaces(eapi):
+    '''Use the JSON output of show lldp neighbors since it filters out
+       the ports that have no lldp neighbors.  Then we create a list of
+       the unique local ports.
+    '''
+    output = run_cmds(eapi, ['show lldp neighbors'], format='json')[0]
+    neighbors = output['lldpNeighbors']
+    out = [x['port'] for x in neighbors]
+    return list(set(out))
+
+def _get_lldp_detail(eapi, intf):
+    return run_cmds(eapi, ['show lldp neighbors %s detail' % intf],
+                           format='text')[0]['output']
+
+def _search(data, regex):
+    if data and regex:
+        reg = re.compile(r'%s' % regex)
+        match = reg.search(data)
+        if match:
+            return match
+        else:
+            return None
+
+def _parse_raw_neighbor(data):
+
+    if not data:
+        return
+
+    neighbor = dict()
+
+    # Parse the data to find neighbor mac address
+    mac = _search(data, 'Chassis\s+ID\s+:\s+(\S+)')
+    neighbor['neighborMac'] = mac.group(1) if mac else ''
+
+    # Parse the data to find neighbor port
+    intf = _search(data, r'\s+Port\s+ID\s+:\s+\"(\S+)\"')
+    neighbor['neighborPort'] = intf.group(1) if intf else ''
+
+    # Parse the data to find neighbor port description
+    port_desc = _search(data, r'Port\s+Description:\s+\"(.*)\"\n')
+    neighbor['neighborPortDescription'] = port_desc.group(1) if port_desc else ''
+
+    # Parse the data to find age
+    age = _search(data, r'\s+age\s+(\d+)\s+seconds')
+    neighbor['age'] = int(age.group(1)) if age else ''
+
+    # Parse the data to find ttl
+    ttl = _search(data, r'Time\s+To\sLive:\s+(\d+)\s+seconds')
+    neighbor['ttl'] = int(ttl.group(1)) if ttl else ''
+
+    # Parse the data to find neighbor system name
+    name = _search(data, r'System\s+Name:\s+?\"(\S+)\"')
+    neighbor['neighborDevice'] = name.group(1) if name else ''
+
+    # Parse the data to find neighbor system description
+    desc = _search(data, r'System\s+Description:\s+\"(.*)\"\n')
+    neighbor['neighborSystemDescription'] = desc.group(1) if desc else ''
+
+    # Parse the data to find neighbor system capabilities
+    capa = _search(data, r'System\s+Capabilities\s+:\s+(.*)\n')
+    neighbor['neighborSystemCapabilities'] = capa.group(1).split(', ') if capa else ''
+
+    # Parse the data to find neighbor system enabled capabilities
+    en_capa = _search(data, r'Enabled\s+Capabilities\s?:\s+(.*)\n')
+    neighbor['neighborEnabledCapabilities'] = en_capa.group(1).split(', ') if en_capa else ''
+
+    # Parse the data to find neighbor mgmt ip type
+    mgmt_addr_type = _search(data, r'Management\s+Address\s+Subtype:\s+(\w+)')
+    neighbor['neighborMgmtAddrType'] = mgmt_addr_type.group(1) if mgmt_addr_type else ''
+
+    # Parse the data to find neighbor mgmt ip
+    mgmt_addr = _search(data, r'Management\s+Address\s+:\s+(.*)\n')
+    neighbor['neighborMgmtAddr'] = mgmt_addr.group(1) if mgmt_addr else ''
+
+    # Parse the data to find neighbor OID string
+    mgmt_addr_oid = _search(data, r'OID\s+String\s+:\s+(\w+)\n')
+    neighbor['neighborMgmtOid'] = mgmt_addr_oid.group(1) if mgmt_addr_oid else ''
+
+    # Parse the data to find neighbor VLAN ID
+    vid = _search(data, r'Port\s+VLAN\s+ID:\s+(\d+)\n')
+    neighbor['neighborVlanId'] = vid.group(1) if vid else ''
+
+    # Parse the data to find IEEE802.3 Max Frame Size
+    max_frame = _search(data, r'Maximum\s+Frame\s+Size:\s+(\d+)\s+bytes')
+    neighbor['neighborMaxFrameSize'] = max_frame.group(1) if max_frame else ''
+
+    return neighbor
+
 def main():
-   switch = Server( 'https://%s:%s@%s/command-api' % 
-                    ( USERNAME, PASSWORD, SWITCH_IP ) )
-   response = switch.runCmds( 1, [ 'show lldp neighbors' ] )
-   neighborInfo = response[ 0 ][ 'lldpNeighbors' ]
-   for i in neighborInfo :
-      localIntf = i[ 'port' ]
-      intfDesc = '*** Link to %s(%s)' % ( i[ 'neighborDevice' ], 
-                                          i[ 'neighborPort' ] )
-      rc = switch.runCmds( 1, [ 'enable',
-                                'configure',
-                                'interface %s' % ( localIntf ),
-                                'description %s' % ( intfDesc ) ] )
+
+   eapi = setup_eapi_connection()
+   neighbors = get_lldp_info(eapi)
+
+   log(neighbors)
+
+   for i in neighbors:
+      localIntf = i['port']
+      intfDesc = '*** Link to %s(%s)' % (i['neighborDevice'],
+                                         i['neighborPort'])
+      rc = run_cmds(eapi, ['enable',
+                           'configure',
+                           'interface %s' % localIntf,
+                           'description %s' % intfDesc])
 
 if __name__ == '__main__':
    main()
