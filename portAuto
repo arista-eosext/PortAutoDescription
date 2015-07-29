@@ -109,10 +109,10 @@ import re
 #----------------------------------------------------------------
 # Configuration section
 #----------------------------------------------------------------
-TRANSPORT = 'http'
-SWITCH_IP = '172.16.130.70'
-USERNAME = 'admin'
-PASSWORD = 'admin'
+TRANSPORT = 'https'
+SWITCH_IP = '127.0.0.1'
+USERNAME = 'test'
+PASSWORD = 'test'
 #----------------------------------------------------------------
 
 def log(msg):
