@@ -101,7 +101,7 @@
       None known.
 """
 
-from jsonrpclib import Server
+import jsonrpclib
 import logging
 import pprint as pp
 import re
@@ -132,7 +132,7 @@ def setup_eapi_connection():
                                          SWITCH_IP)
 
     log("Setting up connection to %s" % url)
-    eapi = Server(url)
+    eapi = jsonrpclib.Server(url)
     return eapi
 
 
