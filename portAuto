@@ -41,6 +41,7 @@
 #       1.0 - initially written using native sysdb calls (deprecated)
 #       2.0 - rewritten using eAPI
 #       3.0 - added show lldp neighbors detail
+#       3.1 - added unix socket support
 
 
 """
@@ -56,10 +57,14 @@
 
                management api http-commands
                   no shutdown
+                  protocol unix-socket #if supported by EOS
 
          - change SWITCH_IP, USERNAME and PASSWORD at the top of the
            script to the ones appropriate for your installation. If
            running locallty, use '127.0.0.1' for the IP.
+         - if you are running a version of EOS that support unix socket
+           connections, then simply use TRANSPORT='socket'. The remaining
+           credentials will be ignored.
 
       portAuto can then be started using any of the following methods:
 
@@ -109,7 +114,9 @@ import re
 #----------------------------------------------------------------
 # Configuration section
 #----------------------------------------------------------------
-TRANSPORT = 'https'
+TRANSPORT = 'socket'
+
+# These are not required if using socket
 SWITCH_IP = '127.0.0.1'
 USERNAME = 'test'
 PASSWORD = 'test'
@@ -128,8 +135,11 @@ def log(msg):
 
 def setup_eapi_connection():
 
-    url = "%s://%s:%s@%s/command-api" % (TRANSPORT, USERNAME, PASSWORD,
-                                         SWITCH_IP)
+    if TRANSPORT == 'socket':
+        url = 'unix:/var/run/command-api.sock'
+    else:
+        url = "%s://%s:%s@%s/command-api" % (TRANSPORT, USERNAME, PASSWORD,
+                                             SWITCH_IP)
 
     log("Setting up connection to %s" % url)
     eapi = jsonrpclib.Server(url)
@@ -262,19 +272,19 @@ def _parse_raw_neighbor(data):
 
 def main():
 
-   eapi = setup_eapi_connection()
-   neighbors = get_lldp_info(eapi)
+    eapi = setup_eapi_connection()
+    neighbors = get_lldp_info(eapi)
 
-   log(neighbors)
+    log(neighbors)
 
-   for i in neighbors:
-      localIntf = i['port']
-      intfDesc = '*** Link to %s(%s)' % (i['neighborDevice'],
-                                         i['neighborPort'])
-      rc = run_cmds(eapi, ['enable',
-                           'configure',
-                           'interface %s' % localIntf,
-                           'description %s' % intfDesc])
+    for i in neighbors:
+        localIntf = i['port']
+        intfDesc = '*** Link to %s(%s)' % (i['neighborDevice'],
+                                           i['neighborPort'])
+        rc = run_cmds(eapi, ['enable',
+                             'configure',
+                             'interface %s' % localIntf,
+                             'description %s' % intfDesc])
 
 if __name__ == '__main__':
    main()
