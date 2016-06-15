@@ -9,6 +9,18 @@ In order to install this extension:
 - copy 'portAuto' to /mnt/flash
 - enable the Command API interface:
 
+By default, the script is set to use unix-sockets. Since the script
+runs on the local switch, by using unix-sockets you do not need to keep
+credentials in the script.
+
+```
+conf
+management api http-commands
+    protocol unix-socket
+    no shutdown
+```
+
+(This will enable eAPI for HTTPS if you do not want to use unix-sockets)
 ```
 management api http-commands
     no shutdown
@@ -16,7 +28,8 @@ management api http-commands
 
 change SWITCH_IP, USERNAME and PASSWORD at the top of the
 script to the ones appropriate for your installation. If
-running locallty, use '127.0.0.1' for the IP.
+running locallty, use '127.0.0.1' for the IP. If using unix-sockets
+you do not need to worry about USERNAME and PASSWORD.
 
 portAuto can then be started using any of the following methods:
 
